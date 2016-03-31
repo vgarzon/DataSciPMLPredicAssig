@@ -1,6 +1,6 @@
 ---
-title: "Practical Machine Learning Course Project"
-subtitle: "Subtitle"
+title: "Human Activity Recognition"
+subtitle: "Coursera Practical Machine Learning: Prediction Assignment"
 author: "Victor Garzon"
 date: "March 30, 2016"
 output: html_document
@@ -12,28 +12,34 @@ knitr::opts_chunk$set(cache=TRUE)
 
 ## Summary
 
+In this project we use machine learning to classify human physical activity using accelerometer data.  We classify barbell lifts in one of five different categories.  We trained a $k$-nearest neighbors classifier using variable `num_window` with accuracy of 98%.  An alternative random forest model trainned on remainder variables had an estimated out-of-sample accuracy of ~95%.  The estimated of out-of-sample accuracy was calculated using cross-validation.
+
 ## Setup
 
-We download the files to a local folder and read them, treating the string `#DIV/0!` as `NA`.
+The data set used comes from six participants who were asked to perform barbell lifts correctly and incorrectly in five different ways.  The participants have accelerometers on their belt, forearm, arm, and dumbell. Information about the dataset is available [here](http://groupware.les.inf.puc-rio.br/har).
 
+We start by downloading and reading the assignment data.
 ```{r}
 url_prefix  <- "https://d396qusza40orc.cloudfront.net/predmachlearn/"
 file_names <- c(train = "pml-training.csv", test = "pml-testing.csv")
 data_dir <- "./data/"
-# Download data files if needed
+```
+```{r, echo=FALSE}
 if ( !dir.exists(data_dir) ) dir.create(data_dir)
 for (fn in file_names) {
     dst <- paste0(data_dir, fn)
     if ( !file.exists(dst) )
         download.file(paste0(url_prefix, fn), dst)
 }
-# Read data from files, treat "#DIV/0!" as NA
+```
+We read the string `#DIV/0!` as `NA`.
+```{r}
 pml_data <- read.csv(paste0(data_dir, file_names["train"]), 
                       na.strings = c("NA", "#DIV/0!"))
 pml_test  <- read.csv(paste0(data_dir, file_names["test"]))
 ```
 
-The training data file has `r nrow(pml_data)` rows and `r ncol(pml_data)` columns.  To train a model we select a smaller subset of rows selected at random.
+The training data file has `r nrow(pml_data)` rows and `r ncol(pml_data)` columns.  To speed-up the train phase we sample a smaller subset of rows.
 ```{r}
 n_small <- 5000
 pml_train <- pml_data
@@ -46,31 +52,29 @@ if (n_small > 0 && n_small <= n_obs) {
 
 ## Data Exploration
 
-We exclude variables that are mostly `NA`, with a threshold of 90%.
+We exclude columns that contain mostly `NA` values, with a threshold of 90%.
 
 ```{r}
 frac_na <- apply(apply(pml_train, 2, is.na), 2, mean)
 ind_col <- which(frac_na < 0.90)
 ```
 
-Before training a model we look at some of the variables, starting with `user_names` and `new_window`.
-
-```{r}
-round(prop.table(table(pml_train$user_name, pml_train$classe), 2), 3)
+The variable we want to predict is `classe`, the last column in the data set.  Plotting variables `user_names` and `classe` we see no discernible pattern.  The majority of entries in `new_window` are of level `no`.  Hence we exclude both variables from model training.  
+```{r, echo=FALSE, fig.align='center'}
 plot(table(pml_train$classe, pml_train$user_name))
+```
+```{r}
 round(prop.table(table(pml_train$new_window, pml_train$classe), 2), 3)
 ```
 
-There is no direct link between `user_names` and `classe`.  The factor variable `new_window` has mostly value of `no`.  Hence we exclude both variables from the model.  We're not concerned with time-dependent trends in the data, so we we exclude time-stamp variables.
-
+We're not concerned with time-dependent trends in the data, so we we exclude time-stamp variables.
 ```{r}
 pml_names <- names(pml_train)
 ind_excl <- match(c("X", "user_name", "new_window"), pml_names)
 ind_excl <- c(ind_excl, grep("timestamp", pml_names))
 ```
 
-Highly-correlated features are excluded, with a correlation threshold of 80%.  
-
+Highly-correlated features are also excluded, using a correlation threshold of 80%.  
 ```{r}
 library(caret, warn.conflicts = FALSE)
 ind_col2 <- setdiff(ind_col, ind_excl)
@@ -86,23 +90,30 @@ set.seed(39847)
 inTrain <- createDataPartition( y = pml_train$classe, p=0.7, list=FALSE)
 training <- pml_train[ inTrain, ind_train]
 testing  <- pml_train[-inTrain, ind_train]
-dim(training); dim(testing)
+dim(training)
+dim(testing)
 ```
 
-## Model Training
+## Training
 
-```{r}
+The following figure shows `classe` as a function of variable `num_window`.  We notice that values of `num_window` form non-overlapping segments. Hence we can expect variable `num_window` to be a good predictor for `classe`.
+```{r, echo=FALSE, fig.align='center'}
 qplot(num_window, classe, data = training)
 ```
 
-Hence we expect variable `num_window` is a very good predictor for `classe`.  To test this we train a $k$-nearest neighbors model using `num_window` as the sole predictor.
-
+We first train a $k$-nearest neighbors model using `num_window` as the sole predictor.
 ```{r}
 mod2 <- train(classe ~ num_window, method = "knn", data = training)
 mod2
 ```
 
-As an alternative we fit a **random forest** model with 50 trees excluding predictor `num_window`. We use **cross-validation** to tune the parameter `mtry`, the maximum number of randomly selected predictors.  We try `mtry` values from 2 to `r ncol(training)-2`.
+We see that the model has an expected accuracy of `r round(max(mod2$results["Accuracy"])*100, 1)`.  Predicting with this model on the test data we get an accuracy of 98.3%.  
+```{r}
+cm2 <- confusionMatrix(predict(mod2, testing), testing$classe)
+cm2$overall["Accuracy"]
+```
+
+We next consider other variables in the data set to estimate out-of-sample error using cross-validation.  We fit a **random forest** model with 50 trees excluding predictor `num_window`. We use **cross-validation** to tune the parameter `mtry`, the maximum number of randomly selected predictors.  We try `mtry` values from 2 to `r ncol(training)-2`.
 
 ```{r}
 n_tree = 50
@@ -113,37 +124,56 @@ mod1 <- train(classe ~ . -num_window, method = "rf",
               trControl = ctr1, tuneGrid = tgd1)
 ```
 
-Summary of **Accuracy** for 10x10 resamples shows estimated out-of-sample accuracy of **95.4**.
+A plot of model error as a function of number of trees is included in the *Appendix*.  The summary of accuracy for the 10x10 resamples shows **estimated out-of-sample accuracy of 95.4%**, with a range of 92.6 to 98.0%.
 ```{r}
 mod1
-plot(mod1)
 summary(mod1$resample$Accuracy)
 ```
 
-We test the model on the 30% of data set aside, confirming the estimation of out-of-sample prediction error.
+The plot of accuracy for repeated cross-validation shows that the highest value occurs for `mtry` value of 10, wich is used in the final model.
+```{r, echo=FALSE, fig.align='center'}
+plot(mod1)
+```
+
+The model has an accuracy of about **95.6%** on the 30% of data set aside for testing, in line with the cross-validation estimate.
 ```{r}
 cm1 <- confusionMatrix(predict(mod1, testing), testing$classe)
 cm1$table
 cm1$overall["Accuracy"]
 ```
 
-Finally we predict the quiz values
+In addition to `num_window`, the following variable were found to be of high importance (see plot in Appendix):
+
+* `yaw_belt`
+* `pitch_forearm`
+* `magnet_dumbbell_z`
+* `magnet_belt_y`
+* `magnet_dumbbell_y`
+* `roll_forearm`
+
+Finally we use the random forest model to classify the `pml_test` data (for quiz purposes).
 ```{r}
 predict(mod1, pml_test)
 ```
 
 ## Conclusions
 
+* `num_window` is a very good predictor of outcome `classe`, even using a relatively simple `knn` model.
+* A random forest model using accelerator data was shown to have ~95% accuracy. 
+* The test data accuracy is in line with the cross-validation estimate. 
+
+## References
+
+1. Velloso, E.; Bulling, A.; Gellersen, H.; Ugulino, W.; Fuks, H. [Qualitative Activity Recognition of Weight Lifting Exercises](http://groupware.les.inf.puc-rio.br/har#ixzz44QfM3vCy). Proceedings of 4th International Conference in Cooperation with SIGCHI (Augmented Human '13) . Stuttgart, Germany: ACM SIGCHI, 2013.
 
 ## Appendix
 
 Plot of 20 most important variables by mean decrease of Gini statistic.
-```{r}
+```{r, echo=FALSE, fig.align='center'}
 varImpPlot(mod1$finalModel, n.var = 20)
 ```
 
 Plot of model error as a function of number of trees
-```{r}
+```{r, echo=FALSE, fig.align='center'}
 plot(mod1$finalModel, type = "l")
 ```
-
